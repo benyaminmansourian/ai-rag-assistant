@@ -117,7 +117,7 @@ document-aware AI assistant with the fewest possible manual steps.
 ```bash
 git clone https://github.com/benyaminmansourian/ai-rag-assistant /opt/ai-rag-assistant
 chmod +x /opt/ai-rag-assistant/scripts/setup.sh
-./opt/ai-rag-assistant/scripts/setup.sh
+/opt/ai-rag-assistant/scripts/setup.sh
 ```
 
 `setup.sh` will:
