@@ -1,0 +1,75 @@
+{
+	# Global options
+	email $EMAIL
+	servers {
+		protocols h1 h2 h3
+	}
+	# Hide Caddy version/server header info
+	admin off
+}
+
+$DOMAIN {
+	# Automatic HTTPS via Let's Encrypt is handled by Caddy's global email directive above.
+
+	encode zstd gzip
+
+	# ---------------------------------------------------------
+	# Security Headers
+	# ---------------------------------------------------------
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+		-X-Powered-By
+	}
+
+	# ---------------------------------------------------------
+	# Rate Limiting (requires caddy-ratelimit plugin build)
+	# If the plugin is not compiled into the image, remove this block.
+	# ---------------------------------------------------------
+	rate_limit {
+		zone dynamic_zone {
+			key {remote_host}
+			events $CADDY_RATE_LIMIT_REQUESTS
+			window $CADDY_RATE_LIMIT_WINDOW
+		}
+	}
+
+	# ---------------------------------------------------------
+	# Upload size limit
+	# ---------------------------------------------------------
+	request_body {
+		max_size $UPLOAD_MAX_SIZE
+	}
+
+	# ---------------------------------------------------------
+	# Reverse proxy to Open WebUI with WebSocket support
+	# ---------------------------------------------------------
+	reverse_proxy open-webui:8080 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 60s
+			read_timeout 300s
+			write_timeout 300s
+		}
+
+		flush_interval -1
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format json
+	}
+}

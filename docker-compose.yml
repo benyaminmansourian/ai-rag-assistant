@@ -1,0 +1,248 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE}"
+    max-file: "${LOG_MAX_FILE}"
+
+networks:
+  rag_internal:
+    name: rag_internal_net
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: rag_postgres_data
+  redis_data:
+    name: rag_redis_data
+  qdrant_data:
+    name: rag_qdrant_data
+  ollama_data:
+    name: rag_ollama_data
+  open_webui_data:
+    name: rag_open_webui_data
+  caddy_data:
+    name: rag_caddy_data
+  caddy_config:
+    name: rag_caddy_config
+
+services:
+
+  caddy:
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+    container_name: rag_caddy
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DOMAIN=${DOMAIN}
+      - EMAIL=${EMAIL}
+      - UPLOAD_MAX_SIZE=${UPLOAD_MAX_SIZE}
+      - CADDY_RATE_LIMIT_REQUESTS=${CADDY_RATE_LIMIT_REQUESTS}
+      - CADDY_RATE_LIMIT_WINDOW=${CADDY_RATE_LIMIT_WINDOW}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/Caddyfile.template:/etc/caddy/Caddyfile.template:ro
+      - ./caddy/entrypoint.sh:/entrypoint.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    networks:
+      - rag_internal
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  postgres:
+    image: postgres:16.4-alpine
+    container_name: rag_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - TZ=${TZ}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4.0-alpine
+    container_name: rag_redis
+    restart: unless-stopped
+    env_file: .env
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD}
+      --save 900 1
+      --save 300 10
+    volumes:
+      - redis_data:/data
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - CHOWN
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  qdrant:
+    build:
+      context: ./qdrant
+      dockerfile: Dockerfile
+    container_name: rag_qdrant
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+      - QDRANT__SERVICE__ENABLE_TLS=false
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__TELEMETRY_DISABLED=true
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  ollama:
+    image: ollama/ollama:0.12.3
+    container_name: rag_ollama
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}
+      - OLLAMA_NOHISTORY=true
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices: []
+    logging: *default-logging
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.0
+    container_name: rag_open_webui
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - WEBUI_NAME=${WEBUI_NAME}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP}
+      - DEFAULT_MODELS=${DEFAULT_MODEL}
+      - RAG_EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - ENABLE_RAG_HYBRID_SEARCH=${ENABLE_RAG_HYBRID_SEARCH}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - TZ=${TZ}
+    volumes:
+      - open_webui_data:/app/backend/data
+    networks:
+      - rag_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
